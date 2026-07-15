@@ -18,6 +18,8 @@
 #include <string>
 #include <mutex>
 
+#include "rosidl_runtime_c/message_type_support_struct.h"
+
 #include "TypeSupport2.hpp"
 #include "bytewise.hpp"
 #include "dds/dds.h"
@@ -73,7 +75,8 @@ public:
 struct sertype_rmw * create_sertype(
   const std::string type_name,
   bool is_request_header,
-  rmw_cyclonedds_cpp::MessageMembersVariant members);
+  rmw_cyclonedds_cpp::MessageMembersVariant members,
+  const rosidl_message_type_support_t * raw_mts = nullptr);
 
 struct ddsi_serdata * serdata_rmw_from_serialized_message(
   const struct ddsi_sertype * typecmn,

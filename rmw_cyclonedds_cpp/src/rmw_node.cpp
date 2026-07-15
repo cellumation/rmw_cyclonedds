@@ -2491,7 +2491,8 @@ static CddsPublisher * create_cdds_publisher(
   auto sertype = create_sertype(
     type_name,
     false,
-    message_members);
+    message_members,
+    type_supports);
   create_msg_dds_dynamic_type(
     type_support->typesupport_identifier, type_support->data, dds_ppant,
     sertype);
@@ -2990,7 +2991,8 @@ static CddsSubscription * create_cdds_subscription(
   auto sertype = create_sertype(
     type_name,
     false,
-    message_members);
+    message_members,
+    type_supports);
   create_msg_dds_dynamic_type(
     type_support->typesupport_identifier, type_support->data, dds_ppant,
     sertype);

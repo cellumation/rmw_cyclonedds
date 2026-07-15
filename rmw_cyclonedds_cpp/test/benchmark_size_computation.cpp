@@ -33,6 +33,11 @@
 #include "visualization_msgs/msg/detail/marker__rosidl_typesupport_introspection_cpp.hpp"
 #include "visualization_msgs/msg/detail/marker_array__rosidl_typesupport_introspection_cpp.hpp"
 
+// tf2_msgs
+#include "tf2_msgs/msg/tf_message.hpp"
+#include "tf2_msgs/msg/detail/tf_message__rosidl_typesupport_introspection_cpp.hpp"
+#include "geometry_msgs/msg/detail/transform_stamped__rosidl_typesupport_introspection_cpp.hpp"
+
 // sensor_msgs
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
@@ -451,6 +456,171 @@ BENCHMARK(BM_Marker_Serialize_Old);
 BENCHMARK(BM_Marker_Serialize);
 BENCHMARK(BM_Marker_Deserialize_Old);
 BENCHMARK(BM_Marker_Deserialize);
+
+// ===========================================================================
+// tf2_msgs benchmarks
+// ===========================================================================
+// Two scenarios:
+//   - Dynamic tf: 1 transform per message (high-frequency robot state)
+//   - Static tf:  20 transforms per message (full robot URDF tree)
+// TransformStamped contains a Header (stamp+frame_id string), a child_frame_id
+// string, and a Transform (Vector3 + Quaternion — all floats/doubles).
+// ---------------------------------------------------------------------------
+static constexpr size_t kTFDynamic = 1;
+static constexpr size_t kTFStatic  = 20;
+
+static void fill_tf_message(
+  tf2_msgs::msg::TFMessage & msg, size_t n_transforms, size_t base_idx)
+{
+  msg.transforms.resize(n_transforms);
+  for (size_t i = 0; i < n_transforms; ++i) {
+    auto & ts = msg.transforms[i];
+    ts.header.frame_id = "world";
+    ts.header.stamp.sec = static_cast<int32_t>(base_idx);
+    ts.header.stamp.nanosec = static_cast<uint32_t>(i * 1000000u);
+    ts.child_frame_id = "link_" + std::to_string(base_idx * n_transforms + i);
+    ts.transform.translation.x = static_cast<double>(i) * 0.1;
+    ts.transform.translation.y = static_cast<double>(i) * 0.2;
+    ts.transform.translation.z = 0.0;
+    ts.transform.rotation.x = 0.0;
+    ts.transform.rotation.y = 0.0;
+    ts.transform.rotation.z = 0.0;
+    ts.transform.rotation.w = 1.0;
+  }
+}
+
+static std::array<tf2_msgs::msg::TFMessage, kNumMessages> g_tf_dynamic;
+static std::array<tf2_msgs::msg::TFMessage, kNumMessages> g_tf_static;
+
+static void init_tf_messages()
+{
+  static bool done = false;
+  if (done) {return;}
+  done = true;
+  for (size_t i = 0; i < kNumMessages; ++i) {
+    fill_tf_message(g_tf_dynamic[i], kTFDynamic, i);
+    fill_tf_message(g_tf_static[i],  kTFStatic,  i);
+  }
+}
+
+static std::vector<std::vector<unsigned char>> g_ser_tf_dynamic;
+static std::vector<std::vector<unsigned char>> g_ser_tf_static;
+
+static void init_serialized_tf_messages()
+{
+  if (!g_ser_tf_dynamic.empty()) {
+    return;
+  }
+  init_tf_messages();
+  MessageMembersVariant members =
+    make_message_members_variant(GET_TS(tf2_msgs, msg, TFMessage));
+  CDRSerializer serializer(members, SampleOrRequest::Sample);
+  g_ser_tf_dynamic.resize(kNumMessages);
+  g_ser_tf_static.resize(kNumMessages);
+  for (size_t i = 0; i < kNumMessages; ++i) {
+    size_t sz = serializer.get_serialized_size(&g_tf_dynamic[i], SampleOrKey::Sample);
+    g_ser_tf_dynamic[i].resize(sz);
+    serializer.serialize(g_ser_tf_dynamic[i].data(), &g_tf_dynamic[i], SampleOrKey::Sample);
+
+    sz = serializer.get_serialized_size(&g_tf_static[i], SampleOrKey::Sample);
+    g_ser_tf_static[i].resize(sz);
+    serializer.serialize(g_ser_tf_static[i].data(), &g_tf_static[i], SampleOrKey::Sample);
+  }
+}
+
+// Template helpers to avoid repetition across Old/New x Dynamic/Static
+template<typename MsgArray>
+static void BM_TF_Serialize_New(
+  benchmark::State & state, MsgArray & pool,
+  const rosidl_message_type_support_t * ts)
+{
+  MessageMembersVariant members = make_message_members_variant(ts);
+  CDRSerializer serializer(members, SampleOrRequest::Sample);
+  size_t max_size = serializer.get_max_serialized_size(SampleOrKey::Sample);
+  if (max_size == SIZE_MAX) { max_size = 64 * 1024; }
+  std::vector<unsigned char> buf(max_size);
+  size_t idx = 0;
+  for (auto _ : state) {
+    serializer.serialize(buf.data(), &pool[idx], SampleOrKey::Sample);
+    benchmark::DoNotOptimize(buf.data());
+    idx = (idx + 1) % kNumMessages;
+  }
+}
+
+template<typename MsgArray>
+static void BM_TF_Serialize_Old(
+  benchmark::State & state, MsgArray & pool,
+  const rosidl_message_type_support_t * ts)
+{
+  MessageMembersVariant members = make_message_members_variant(ts);
+  auto writer = make_cdr_writer_old(members, SampleOrRequest::Sample);
+  size_t max_size = writer->get_max_serialized_size(SampleOrKey::Sample);
+  if (max_size == SIZE_MAX) { max_size = 64 * 1024; }
+  std::vector<unsigned char> buf(max_size);
+  size_t idx = 0;
+  for (auto _ : state) {
+    writer->serialize(buf.data(), &pool[idx], SampleOrKey::Sample);
+    benchmark::DoNotOptimize(buf.data());
+    idx = (idx + 1) % kNumMessages;
+  }
+}
+
+template<typename MsgArray>
+static void BM_TF_Deserialize_New(
+  benchmark::State & state, MsgArray & pool,
+  std::vector<std::vector<unsigned char>> & bufs,
+  const rosidl_message_type_support_t * ts)
+{
+  init_serialized_tf_messages();
+  MessageMembersVariant members = make_message_members_variant(ts);
+  CDRDeserializer deserializer(members, SampleOrRequest::Sample);
+  tf2_msgs::msg::TFMessage msg;
+  size_t idx = 0;
+  for (auto _ : state) {
+    const auto & buf = bufs[idx];
+    deserializer.deserialize(&msg, buf.data(), buf.size(), SampleOrKey::Sample);
+    benchmark::DoNotOptimize(msg.transforms.data());
+    idx = (idx + 1) % kNumMessages;
+  }
+  (void)pool;
+}
+
+template<typename MsgArray>
+static void BM_TF_Deserialize_Old(
+  benchmark::State & state, MsgArray & pool,
+  std::vector<std::vector<unsigned char>> & bufs,
+  const rosidl_message_type_support_t * ts)
+{
+  init_serialized_tf_messages();
+  MessageMembersVariant members = make_message_members_variant(ts);
+  auto reader = make_cdr_reader_old(members, SampleOrRequest::Sample);
+  tf2_msgs::msg::TFMessage msg;
+  size_t idx = 0;
+  for (auto _ : state) {
+    const auto & buf = bufs[idx];
+    reader->deserialize(&msg, buf.data(), buf.size(), SampleOrKey::Sample);
+    benchmark::DoNotOptimize(msg.transforms.data());
+    idx = (idx + 1) % kNumMessages;
+  }
+  (void)pool;
+}
+
+#define REGISTER_TF(label, pool, ser_pool) \
+  static void BM_TFMessage_ ## label ## _Serialize_Old(benchmark::State & state) \
+  { init_tf_messages(); BM_TF_Serialize_Old(state, pool, GET_TS(tf2_msgs, msg, TFMessage)); } \
+  static void BM_TFMessage_ ## label ## _Serialize(benchmark::State & state) \
+  { init_tf_messages(); BM_TF_Serialize_New(state, pool, GET_TS(tf2_msgs, msg, TFMessage)); } \
+  static void BM_TFMessage_ ## label ## _Deserialize_Old(benchmark::State & state) \
+  { BM_TF_Deserialize_Old(state, pool, ser_pool, GET_TS(tf2_msgs, msg, TFMessage)); } \
+  static void BM_TFMessage_ ## label ## _Deserialize(benchmark::State & state) \
+  { BM_TF_Deserialize_New(state, pool, ser_pool, GET_TS(tf2_msgs, msg, TFMessage)); } \
+  BENCHMARK(BM_TFMessage_ ## label ## _Serialize_Old); \
+  BENCHMARK(BM_TFMessage_ ## label ## _Serialize); \
+  BENCHMARK(BM_TFMessage_ ## label ## _Deserialize_Old); \
+  BENCHMARK(BM_TFMessage_ ## label ## _Deserialize);
+
+REGISTER_TF(Dynamic, g_tf_dynamic, g_ser_tf_dynamic)
+REGISTER_TF(Static,  g_tf_static,  g_ser_tf_static)
 
 // ===========================================================================
 // sensor_msgs benchmarks

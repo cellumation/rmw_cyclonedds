@@ -13,7 +13,9 @@
 // limitations under the License.
 #include "serdata.hpp"
 
+#include <cstdio>
 #include <cstring>
+#include <iostream>
 #include <memory>
 #include <regex>
 #include <sstream>
@@ -24,7 +26,9 @@
 #include "dds/dds.h"
 #include "cdds_version.hpp"
 
+#include "rcutils/error_handling.h"
 #include "rmw/allocators.h"
+#include "FastrtpsCDRWriter.hpp"
 #include "Serialization.hpp"
 #include "TypeSupport2.hpp"
 #include "bytewise.hpp"
@@ -852,7 +856,8 @@ static const struct ddsi_sertype_ops sertype_rmw_ops = {
 struct sertype_rmw * create_sertype(
   const std::string type_name,
   bool is_request_header,
-  rmw_cyclonedds_cpp::MessageMembersVariant members)
+  rmw_cyclonedds_cpp::MessageMembersVariant members,
+  const rosidl_message_type_support_t * raw_mts)
 {
   auto message_type = rmw_cyclonedds_cpp::make_struct_value_type(members);
   struct sertype_rmw * st = new struct sertype_rmw;
@@ -895,6 +900,23 @@ struct sertype_rmw * create_sertype(
   const auto variant =
     is_request_header ? rmw_cyclonedds_cpp::SampleOrRequest::Request :
     rmw_cyclonedds_cpp::SampleOrRequest::Sample;
+
+#ifdef USE_FASTRTPS_CDR_IMPL
+  if (raw_mts && !is_request_header) {
+    auto fastrtps_writer = rmw_cyclonedds_cpp::make_cdr_writer_fastrtps(raw_mts, variant);
+    auto fastrtps_reader = rmw_cyclonedds_cpp::make_cdr_reader_fastrtps(raw_mts, variant);
+    if (fastrtps_writer && fastrtps_reader) {
+      std::cerr << "[rmw_cyclonedds] " << type_name
+                << ": using FASTRTPS CDR serializer\n";
+      st->cdr_writer = std::move(fastrtps_writer);
+      st->cdr_reader = std::move(fastrtps_reader);
+      return st;
+    }
+    std::cerr << "[rmw_cyclonedds] " << type_name
+              << ": FASTRTPS CDR unavailable, falling back\n";
+  }
+#endif
+
   st->cdr_writer = rmw_cyclonedds_cpp::make_cdr_writer(members, variant);
   st->cdr_reader = rmw_cyclonedds_cpp::make_cdr_reader(members, variant);
 

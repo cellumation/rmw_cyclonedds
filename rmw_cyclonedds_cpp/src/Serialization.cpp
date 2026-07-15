@@ -248,6 +248,29 @@ enum class MinOrMax
   Max
 };
 
+// Returns the CDR stride for sequence elements of fixed-size struct types where
+// CDR size == native size AND sizeof_struct % 8 == 0.
+// The trivial_at[0] check (8-byte aligned start) ensures CDR size == native size;
+// combined with sz % 8 == 0 it guarantees every consecutive element is naturally
+// aligned for all its fields, allowing bulk memcpy / size advance.
+// Returns 0 for variable-length or non-qualifying types.
+static size_t fixed_cdr_stride_seq_elem(const AnyValueType * vt,
+  const TriviallySerializedCache & tsc)
+{
+  if (vt->e_value_type() != EValueType::StructValueType) {
+    return 0;
+  }
+  size_t sz = static_cast<const StructValueType *>(vt)->sizeof_struct();
+  if (sz == 0 || sz % 8 != 0) {
+    return 0;
+  }
+  // Verify CDR size == native size when 8-byte aligned (trivial at alignment 0).
+  if (!tsc.lookup_trivially_serialized(0, vt)) {
+    return 0;
+  }
+  return sz;
+}
+
 class CDRWriter final : public BaseCDRWriter
 {
 public:
@@ -495,7 +518,16 @@ protected:
     if (tsc.lookup_many_trivially_serialized(dst.offset(), vt)) {
       size_t value_size = vt->sizeof_type();
       dst.put_bytes(src, count * value_size);
-      return;
+    } else if (size_t stride = fixed_cdr_stride_seq_elem(vt, tsc); stride > 0) {
+      // Fixed-stride struct (sizeof % 8 == 0): every element is naturally aligned.
+      // SizeCursor can skip element-by-element dispatch entirely.
+      if (dst.ignores_data()) {
+        dst.advance(count * stride);
+      } else {
+        for (size_t i = 0; i < count; i++) {
+          serialize(dst, byte_offset(src, i * stride), vt, what);
+        }
+      }
     } else {
       for (size_t i = 0; i < count; i++) {
         auto element = byte_offset(src, i * vt->sizeof_type());
@@ -1024,6 +1056,9 @@ protected:
     dst += value_size;
 
     if (!bswap_src && tsc.lookup_many_trivially_serialized(src.offset(), vt)) {
+      src.get_bytes(dst, count * value_size);
+    } else if (!bswap_src && fixed_cdr_stride_seq_elem(vt, tsc) == value_size) {
+      // Fixed-stride struct, no bswap: bulk memcpy same as trivial path.
       src.get_bytes(dst, count * value_size);
     } else {
       for (size_t i = 0; i < count; i++) {

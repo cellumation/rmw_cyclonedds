@@ -17,6 +17,7 @@ cmake_minimum_required(VERSION 3.20)
 project(rmw_cyclonedds_cpp)
 
 option(USE_NEW_CDR_IMPL "Use the new CDRSerializer/CDRDeserializer instead of the old CDRWriter/CDRReader" ON)
+option(USE_FASTRTPS_CDR_IMPL "Use rosidl_typesupport_fastrtps_cpp generated serialize callbacks (fastest, non-keyed topics only)" OFF)
 
 # Default to C++20
 if(NOT CMAKE_CXX_STANDARD)
@@ -59,6 +60,11 @@ find_package(rmw_security_common REQUIRED)
 find_package(rosidl_runtime_c REQUIRED)
 find_package(rosidl_typesupport_introspection_c REQUIRED)
 find_package(rosidl_typesupport_introspection_cpp REQUIRED)
+if(USE_FASTRTPS_CDR_IMPL)
+  find_package(fastcdr REQUIRED)
+  find_package(rosidl_typesupport_fastrtps_cpp REQUIRED)
+  find_package(rosidl_typesupport_fastrtps_c REQUIRED)
+endif()
 
 if(_cyclonedds_has_shm)
   ament_export_dependencies(iceoryx_binding_c)
@@ -87,7 +93,8 @@ add_library(rmw_cyclonedds_cpp
   src/TypeSupport2.cpp
   src/type_name.cpp
   src/dyntype.cpp
-  src/dyntype_helper.c)
+  src/dyntype_helper.c
+  src/FastrtpsCDRWriter.cpp)
 
 configure_file("src/cdds_version.hpp.in" "src/cdds_version.hpp")
 target_include_directories(rmw_cyclonedds_cpp PRIVATE ${CMAKE_BINARY_DIR}/src)
@@ -106,6 +113,13 @@ target_link_libraries(rmw_cyclonedds_cpp PRIVATE
   rosidl_runtime_c::rosidl_runtime_c
   tracetools::tracetools
 )
+if(USE_FASTRTPS_CDR_IMPL)
+  target_link_libraries(rmw_cyclonedds_cpp PRIVATE
+    fastcdr
+    rosidl_typesupport_fastrtps_cpp::rosidl_typesupport_fastrtps_cpp
+    rosidl_typesupport_fastrtps_c::rosidl_typesupport_fastrtps_c
+  )
+endif()
 
 if(_cyclonedds_has_shm)
   target_link_libraries(rmw_cyclonedds_cpp PRIVATE iceoryx_binding_c::iceoryx_binding_c)
@@ -130,6 +144,7 @@ target_compile_definitions(${PROJECT_NAME}
     RMW_VERSION_MINOR=${rmw_VERSION_MINOR}
     RMW_VERSION_PATCH=${rmw_VERSION_PATCH}
     $<$<BOOL:${USE_NEW_CDR_IMPL}>:USE_NEW_CDR_IMPL>
+    $<$<BOOL:${USE_FASTRTPS_CDR_IMPL}>:USE_FASTRTPS_CDR_IMPL>
 )
 
 ament_export_targets(export_rmw_cyclonedds_cpp)
@@ -150,6 +165,7 @@ if(BUILD_TESTING)
   find_package(example_interfaces REQUIRED)
   find_package(sensor_msgs REQUIRED)
   find_package(test_msgs REQUIRED)
+  find_package(tf2_msgs REQUIRED)
   find_package(iceoryx_binding_c REQUIRED)
 
   # Static library with serialization sources shared across all test targets.
@@ -214,9 +230,10 @@ if(BUILD_TESTING)
     rmw_cyclonedds_cpp
     ${std_msgs_LIBRARIES}
     ${visualization_msgs_LIBRARIES}
-    ${sensor_msgs_LIBRARIES})
+    ${sensor_msgs_LIBRARIES}
+    ${tf2_msgs_LIBRARIES})
   ament_target_dependencies(benchmark_size_computation
-    std_msgs visualization_msgs sensor_msgs)
+    std_msgs visualization_msgs sensor_msgs tf2_msgs)
 endif()
 
 ament_package()
